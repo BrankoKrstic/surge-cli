@@ -1,0 +1,15 @@
+[package]
+name = "surge"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+cpal = "0.17.3"
+futures = "0.3.32"
+num = "0.4.3"
+radiobrowser = "0.6.1"
+reqwest = { version = "0.13.3", features = ["blocking"] }
+symphonia = { version = "0.6.0", features = ["all"] }
+tokio = { version = "1.52.3", features = ["full"] }
+zerocopy = { version = "0.8.48", features = ["derive", "std", "zerocopy-derive"] }
