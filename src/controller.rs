@@ -24,13 +24,10 @@ impl AudioController {
     }
     pub fn start_stream(&mut self, url: &str) {
         let response = reqwest::blocking::get(url).expect("Failed to connect to stream");
-        // 2. Wrap the response body in a ReadOnlySource
         let reader = ReadOnlySource::new(response);
 
-        // 3. Create a MediaSourceStream (disabling seekability)
         let mss = MediaSourceStream::new(Box::new(reader), Default::default());
 
-        // 4. Probe and decode the stream
         let probe = get_probe();
 
         let fmt_opts: FormatOptions = Default::default();
@@ -40,15 +37,12 @@ impl AudioController {
             .probe(&Default::default(), mss, fmt_opts, meta_opts)
             .expect("Failed to probe media format");
 
-        // Find the first audio track with a known (decodeable) codec.
         let track = format
             .default_track(TrackType::Audio)
             .expect("no audio track");
 
-        // Use the default options for the decoder.
         let dec_opts: AudioDecoderOptions = Default::default();
 
-        // Create a decoder for the track.
         let mut decoder = symphonia::default::get_codecs()
             .make_audio_decoder(
                 track
@@ -61,7 +55,6 @@ impl AudioController {
             )
             .expect("unsupported codec");
 
-        // Store the track identifier, it will be used to filter packets.
         let track_id = track.id;
         let mut samples: Vec<f32> = Default::default();
         let mut total_sample_count = 0;

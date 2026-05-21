@@ -1,5 +1,3 @@
-use std::sync::Condvar;
-
 use cpal::{
     Device, Sample, SampleFormat, StreamConfig, SupportedStreamConfig,
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -21,10 +19,6 @@ impl Playback {
             .default_output_device()
             .expect("no output device available");
 
-        let supported_configs_range = device
-            .supported_output_configs()
-            .expect("error while querying configs");
-
         let supported_config = device
             .default_output_config()
             .expect("no output config available");
@@ -44,7 +38,7 @@ impl Playback {
             SampleFormat::F32 => self.device.build_output_stream(
                 &self.config.config(),
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    let (copied, remaining) = self.read_buf.pop_partial_slice(data);
+                    let (_copied, remaining) = self.read_buf.pop_partial_slice(data);
 
                     for sample in remaining.iter_mut() {
                         *sample = f32::EQUILIBRIUM;
