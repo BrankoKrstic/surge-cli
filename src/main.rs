@@ -1,8 +1,19 @@
 use std::error::Error;
 
 use radiobrowser::{RadioBrowserAPI, StationOrder};
+use ratatui::{DefaultTerminal, Frame, Terminal, prelude::CrosstermBackend};
 use rtrb::RingBuffer;
-use surge::{controller::AudioController, play::Playback, signal::Signal};
+use surge::{
+    cli::{
+        app::App,
+        event::{Event, EventHandler},
+        tui::Tui,
+        update::update,
+    },
+    controller::AudioController,
+    play::Playback,
+    signal::Signal,
+};
 use tokio::join;
 
 #[tokio::main]
@@ -25,13 +36,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Stations found: {:?}", stations?);
 
-    // 1. Create a blocking request to the web stream
-    //
-    //
     tokio::task::spawn_blocking(|| {
-        // The decode loop.
-        //
-        //
         let playback_done_signal = Signal::new();
         let (producer, consumer) = RingBuffer::new(10000);
         let playback = Playback::new(consumer, playback_done_signal.clone());
@@ -41,8 +46,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let mut audio = AudioController::new(producer, playback_done_signal);
 
         audio.start_stream("https://media.radioexs.com/stream/jackradio");
-    })
-    .await;
+    });
+
+    let mut app = App::new();
+
+    // Initialize the terminal user interface.
+    let backend = CrosstermBackend::new(std::io::stderr());
+    let terminal = Terminal::new(backend)?;
+    let events = EventHandler::new(250);
+    let mut tui = Tui::new(terminal, events);
+    tui.enter()?;
+
+    // Start the main loop.
+    while !app.should_quit() {
+        // Render the user interface.
+        tui.draw(&mut app)?;
+        // Handle events.
+        match tui.events.next()? {
+            Event::Tick => {}
+            Event::Key(key_event) => update(&mut app, key_event),
+            Event::Mouse(_) => {}
+            Event::Resize(_, _) => {}
+        };
+    }
+
+    // Exit the user interface.
+    tui.exit()?;
 
     Ok(())
 }

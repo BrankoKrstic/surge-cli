@@ -104,7 +104,6 @@ impl AudioController {
                     while !self.audio_buffer.push_entire_slice(&samples).is_ok() {}
                     // Sum up the total number of samples.
                     total_sample_count += samples.len();
-                    print!("\rDecoded {total_sample_count} samples {}", samples.len());
 
                     // Consume the decoded audio samples (see below).
                 }

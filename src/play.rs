@@ -37,7 +37,7 @@ impl Playback {
         let stream = match self.config.sample_format() {
             SampleFormat::F32 => self.device.build_output_stream(
                 &self.config.config(),
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
                     let (_copied, remaining) = self.read_buf.pop_partial_slice(data);
 
                     for sample in remaining.iter_mut() {

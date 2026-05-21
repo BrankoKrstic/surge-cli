@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod controller;
 pub mod fft;
 pub mod play;
