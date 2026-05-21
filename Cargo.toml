@@ -5,11 +5,13 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
-cpal = "0.17.3"
+clap = { version = "4.6.1", features = ["derive"] }
+cpal = { version = "0.17.3", features = ["jack"] }
 futures = "0.3.32"
 num = "0.4.3"
 radiobrowser = "0.6.1"
 reqwest = { version = "0.13.3", features = ["blocking"] }
+rtrb = "0.3.4"
 symphonia = { version = "0.6.0", features = ["all"] }
 tokio = { version = "1.52.3", features = ["full"] }
 zerocopy = { version = "0.8.48", features = ["derive", "std", "zerocopy-derive"] }
