@@ -1,5 +1,6 @@
-use std::error::Error;
+use std::{error::Error, time::Duration};
 
+use crossterm::event;
 use radiobrowser::{RadioBrowserAPI, StationOrder};
 use ratatui::{DefaultTerminal, Frame, Terminal, prelude::CrosstermBackend};
 use rtrb::RingBuffer;
@@ -57,17 +58,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut tui = Tui::new(terminal, events);
     tui.enter()?;
 
+    let frame_timeout = Duration::from_secs_f64(1.0 / 60.0);
     // Start the main loop.
     while !app.should_quit() {
         // Render the user interface.
         tui.draw(&mut app)?;
+
+        event::poll(frame_timeout).expect("Unable to poll event");
         // Handle events.
-        match tui.events.next()? {
-            Event::Tick => {}
-            Event::Key(key_event) => update(&mut app, key_event),
-            Event::Mouse(_) => {}
-            Event::Resize(_, _) => {}
-        };
+        //
+        while let Some(event) = tui.events.try_next()? {
+            match event {
+                Event::Key(key_event) => update(&mut app, key_event),
+                Event::Mouse(_) => {}
+                Event::Resize(_, _) => {}
+            }
+        }
     }
 
     // Exit the user interface.

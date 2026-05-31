@@ -11,8 +11,6 @@ use color_eyre::Result;
 /// Terminal events.
 #[derive(Clone, Copy, Debug)]
 pub enum Event {
-    /// Terminal tick.
-    Tick,
     /// Key press.
     Key(KeyEvent),
     /// Mouse click/scroll.
@@ -24,8 +22,6 @@ pub enum Event {
 /// Terminal event handler.
 #[derive(Debug)]
 pub struct EventHandler {
-    /// Event sender channel.
-    sender: mpsc::Sender<Event>,
     /// Event receiver channel.
     receiver: mpsc::Receiver<Event>,
     /// Event handler thread.
@@ -40,43 +36,23 @@ impl EventHandler {
         let handler = {
             let sender = sender.clone();
             thread::spawn(move || {
-                let mut last_tick = Instant::now();
                 loop {
-                    let timeout = tick_rate
-                        .checked_sub(last_tick.elapsed())
-                        .unwrap_or(tick_rate);
-
-                    if event::poll(timeout).expect("unable to poll for event") {
-                        match event::read().expect("unable to read event") {
-                            crossterm::event::Event::Key(e)
-                                if e.kind == event::KeyEventKind::Press =>
-                            {
-                                sender.send(Event::Key(e))
-                            }
-                            crossterm::event::Event::Key(e) => Ok(()),
-                            crossterm::event::Event::Mouse(e) => sender.send(Event::Mouse(e)),
-                            crossterm::event::Event::Resize(w, h) => {
-                                sender.send(Event::Resize(w, h))
-                            }
-                            _ => unimplemented!(),
+                    let send_result = match event::read().expect("unable to read event") {
+                        crossterm::event::Event::Key(e) if e.kind == event::KeyEventKind::Press => {
+                            sender.send(Event::Key(e))
                         }
-                        .expect("failed to send terminal event")
-                    }
-
-                    if last_tick.elapsed() >= tick_rate {
-                        if sender.send(Event::Tick).is_err() {
-                            break;
-                        }
-                        last_tick = Instant::now();
+                        crossterm::event::Event::Key(e) => Ok(()),
+                        crossterm::event::Event::Mouse(e) => sender.send(Event::Mouse(e)),
+                        crossterm::event::Event::Resize(w, h) => sender.send(Event::Resize(w, h)),
+                        _ => unimplemented!(),
+                    };
+                    if send_result.is_err() {
+                        break;
                     }
                 }
             })
         };
-        Self {
-            sender,
-            receiver,
-            handler,
-        }
+        Self { receiver, handler }
     }
 
     /// Receive the next event from the handler thread.
@@ -85,5 +61,14 @@ impl EventHandler {
     /// there is no data available and it's possible for more data to be sent.
     pub fn next(&self) -> Result<Event> {
         Ok(self.receiver.recv()?)
+    }
+    pub fn try_next(&self) -> Result<Option<Event>> {
+        match self.receiver.try_recv() {
+            Ok(e) => Ok(Some(e)),
+            Err(err) => match err {
+                mpsc::TryRecvError::Empty => Ok(None),
+                mpsc::TryRecvError::Disconnected => Err(err)?,
+            },
+        }
     }
 }
