@@ -8,18 +8,24 @@ use symphonia::{
     default::get_probe,
 };
 
-use crate::signal::Signal;
+use crate::{processor::ProcessorWriter, signal::Signal};
 
 pub struct AudioController {
     audio_buffer: rtrb::Producer<f32>,
     playback_done_signal: Signal,
+    processor_writer: ProcessorWriter,
 }
 
 impl AudioController {
-    pub fn new(audio_buffer: rtrb::Producer<f32>, playback_done_signal: Signal) -> Self {
+    pub fn new(
+        audio_buffer: rtrb::Producer<f32>,
+        playback_done_signal: Signal,
+        processor_writer: ProcessorWriter,
+    ) -> Self {
         Self {
             audio_buffer,
             playback_done_signal,
+            processor_writer,
         }
     }
     pub fn start_stream(&mut self, url: &str) {
@@ -57,7 +63,6 @@ impl AudioController {
 
         let track_id = track.id;
         let mut samples: Vec<f32> = Default::default();
-        let mut total_sample_count = 0;
 
         loop {
             // Get the next packet from the media format.
@@ -102,8 +107,7 @@ impl AudioController {
                     // order. The sample format to convert to is inferred from the type of the Vec.
                     audio_buf.copy_to_slice_interleaved(&mut samples);
                     while !self.audio_buffer.push_entire_slice(&samples).is_ok() {}
-                    // Sum up the total number of samples.
-                    total_sample_count += samples.len();
+                    self.processor_writer.write_bytes(&samples);
 
                     // Consume the decoded audio samples (see below).
                 }

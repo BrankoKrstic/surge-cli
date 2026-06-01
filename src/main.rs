@@ -1,4 +1,8 @@
-use std::{error::Error, time::Duration};
+use std::{
+    error::Error,
+    sync::{Arc, atomic::AtomicU64},
+    time::Duration,
+};
 
 use crossterm::event;
 use radiobrowser::{RadioBrowserAPI, StationOrder};
@@ -13,6 +17,7 @@ use surge::{
     },
     controller::AudioController,
     play::Playback,
+    processor::Processor,
     signal::Signal,
 };
 use tokio::join;
@@ -37,19 +42,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Stations found: {:?}", stations?);
 
+    let playback_counter = Arc::new(AtomicU64::new(0));
+    let (reader, writer) = Processor::new(playback_counter.clone()).split();
+
     tokio::task::spawn_blocking(|| {
         let playback_done_signal = Signal::new();
         let (producer, consumer) = RingBuffer::new(10000);
-        let playback = Playback::new(consumer, playback_done_signal.clone());
+        let playback = Playback::new(consumer, playback_done_signal.clone(), playback_counter);
 
         std::thread::spawn(move || playback.run());
 
-        let mut audio = AudioController::new(producer, playback_done_signal);
+        let mut audio = AudioController::new(producer, playback_done_signal, writer);
 
         audio.start_stream("https://media.radioexs.com/stream/jackradio");
     });
 
-    let mut app = App::new();
+    let mut app = App::new(reader);
 
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(std::io::stderr());
@@ -62,6 +70,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Start the main loop.
     while !app.should_quit() {
         // Render the user interface.
+        app.tick();
         tui.draw(&mut app)?;
 
         event::poll(frame_timeout).expect("Unable to poll event");

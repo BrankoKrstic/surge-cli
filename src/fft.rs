@@ -2,7 +2,7 @@ use std::f64::consts::PI;
 
 use num::{Complex, pow::Pow};
 
-fn fft(input: &[f64]) -> Vec<Complex<f64>> {
+pub fn fft(input: &[f64]) -> Vec<Complex<f64>> {
     let n = input.len();
 
     if n <= 1 {

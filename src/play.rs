@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
 use cpal::{
     Device, Sample, SampleFormat, StreamConfig, SupportedStreamConfig,
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -10,10 +15,15 @@ pub struct Playback {
     config: SupportedStreamConfig,
     read_buf: rtrb::Consumer<f32>,
     playback_done: Signal,
+    playback_counter: Arc<AtomicU64>,
 }
 
 impl Playback {
-    pub fn new(read_buf: rtrb::Consumer<f32>, playback_done: Signal) -> Self {
+    pub fn new(
+        read_buf: rtrb::Consumer<f32>,
+        playback_done: Signal,
+        playback_counter: Arc<AtomicU64>,
+    ) -> Self {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
@@ -28,6 +38,7 @@ impl Playback {
             config: supported_config,
             read_buf,
             playback_done,
+            playback_counter,
         }
     }
     pub fn run(mut self) {
@@ -38,7 +49,10 @@ impl Playback {
             SampleFormat::F32 => self.device.build_output_stream(
                 &self.config.config(),
                 move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
-                    let (_copied, remaining) = self.read_buf.pop_partial_slice(data);
+                    let (copied, remaining) = self.read_buf.pop_partial_slice(data);
+
+                    self.playback_counter
+                        .fetch_add(copied.len() as u64, Ordering::Relaxed);
 
                     for sample in remaining.iter_mut() {
                         *sample = f32::EQUILIBRIUM;
