@@ -1,3 +1,5 @@
+use std::iter::repeat_n;
+
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -19,30 +21,26 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     ]);
     frame.render_widget(title.centered(), top);
 
-    render_sparkline(frame, first, app.freqs());
+    render_sparkline(app, frame, first);
 }
 
 /// Render a sparkline with some sample data.
-pub fn render_sparkline(frame: &mut Frame, area: Rect, freqs: &[f64]) {
-    let chunk_size = freqs.len() / area.width as usize;
-    let norm_factor = 1.0 / freqs.len() as f64;
+pub fn render_sparkline(app: &mut App, frame: &mut Frame, area: Rect) {
+    let bar_count = area.width as usize / 2;
 
-    let mut data = freqs.iter().map(|f| f.log10());
+    app.compute_bars(bar_count);
 
-    let data = (0..area.width)
-        .map(|_| data.by_ref().take(chunk_size).map(|f| f).sum())
-        .collect::<Vec<f64>>();
-
-    let max = data.iter().copied().reduce(|a, b| a.max(b)).unwrap();
-
-    let data = data
-        .into_iter()
-        .map(|num| (num * 150.0).round() as u64)
+    let data = app
+        .bars()
+        .iter()
+        .map(|item| repeat_n(item, 2))
+        .flatten()
+        .map(|&b| (b * 100.0).round() as u64)
         .collect::<Vec<_>>();
 
     let sparkline = Sparkline::default()
         .data(&data)
-        .max(200)
+        .max(100)
         .direction(RenderDirection::LeftToRight)
         .style(Color::Cyan);
 

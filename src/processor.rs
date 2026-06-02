@@ -75,7 +75,9 @@ impl ProcessorReader {
         let c2_freq = fft::fft(&c2_buf);
 
         for i in 0..out.len() {
-            out[i] = c1_freq[i].norm() + c2_freq[i].norm();
+            let c1 = c1_freq[i].norm();
+            let c2 = c2_freq[i].norm();
+            out[i] = ((c1 * c1 + c2 * c2) * 0.5).sqrt();
         }
 
         out
