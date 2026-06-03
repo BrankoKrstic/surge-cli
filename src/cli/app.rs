@@ -1,31 +1,33 @@
 use std::{io, iter::repeat_n};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::{
-    DefaultTerminal, Frame,
-    buffer::Buffer,
-    layout::Rect,
-    style::Stylize,
-    symbols::border,
-    text::{Line, Text},
-    widgets::{Block, Paragraph, Widget},
-};
 
-use crate::processor::ProcessorReader;
+use crate::{
+    processor::ProcessorReader,
+    radio::{RadioApiFetcher, RadioState},
+};
 
 pub static FREQUENCY_COUNT: usize = 4096;
 
 pub struct App {
     processor_reader: ProcessorReader,
     pub freq: FrequencyState,
+    pub screen: Screen,
+    volume: u32,
     exit: bool,
+    search_query: String,
+    radio: RadioApiFetcher,
+    selected_idx: usize,
 }
 
 pub struct FrequencyState {
     pub frequencies: [f64; FREQUENCY_COUNT],
     pub prev_bars: Vec<f32>,
 }
-
+pub enum Direction {
+    Up,
+    Down,
+}
 impl App {
     pub fn new(reader: ProcessorReader) -> Self {
         Self {
@@ -35,10 +37,56 @@ impl App {
                 prev_bars: vec![],
             },
             exit: false,
+            volume: 100,
+            screen: Screen::Main,
+            search_query: String::new(),
+            radio: RadioApiFetcher::new(),
+            selected_idx: 0,
         }
+    }
+    pub fn search_query(&self) -> &str {
+        &self.search_query[..]
+    }
+    pub fn push_char(&mut self, c: char) {
+        self.selected_idx = 0;
+        self.search_query.push(c);
+        self.radio.query(&self.search_query[..]);
+    }
+    pub fn song_selected(&self) -> usize {
+        self.selected_idx
+    }
+    pub fn pop_char(&mut self) {
+        self.selected_idx = 0;
+        if self.search_query.pop().is_some() {
+            self.radio.query(&self.search_query[..]);
+        }
+    }
+    pub fn volume_up(&mut self) {
+        self.volume = (self.volume + 5).max(150);
+    }
+    pub fn volume_down(&mut self) {
+        self.volume = self.volume.saturating_sub(5);
+    }
+    pub fn search_radio_station(&mut self, name: &str) {
+        self.radio.query(name);
+    }
+    pub fn radio_state(&mut self) -> RadioState {
+        self.radio.poll_state()
     }
     pub fn tick(&mut self) {
         self.freq.frequencies = self.processor_reader.query_frequencies();
+    }
+    pub fn move_cursor(&mut self, direction: Direction) {
+        if let RadioState::Complete(x) = self.radio_state()
+            && !x.is_empty()
+        {
+            match direction {
+                Direction::Up => {
+                    self.selected_idx = self.selected_idx.wrapping_sub(1).min(x.len() - 1)
+                }
+                Direction::Down => self.selected_idx = (self.selected_idx + 1) % x.len(),
+            }
+        }
     }
 
     fn handle_events(&mut self) -> io::Result<()> {
@@ -69,6 +117,13 @@ impl App {
     pub fn quit(&mut self) {
         self.exit = true;
     }
+}
+
+#[derive(Copy, Clone)]
+pub enum Screen {
+    Main,
+    Search,
+    Quit,
 }
 
 fn smooth_bars(previous: &mut Vec<f32>, target: &[f32], dt: f32) {

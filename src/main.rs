@@ -18,34 +18,15 @@ use surge::{
     controller::AudioController,
     play::Playback,
     processor::Processor,
+    radio::RadioApiFetcher,
     signal::Signal,
 };
-use tokio::join;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let mut api = RadioBrowserAPI::new().await?;
-    let countries = api.get_countries().send();
-    let languages = api.get_languages().send();
-    let stations = api
-        .get_stations()
-        .country("Serbia")
-        .reverse(true)
-        .order(StationOrder::Clickcount)
-        .send();
-    let config = api.get_server_config();
-    let (stations, config, countries, languages) = join!(stations, config, countries, languages);
-
-    println!("Config: {:#?}", config?);
-    println!("Countries found: {}", countries?.len());
-    println!("Languages found: {}", languages?.len());
-
-    println!("Stations found: {:?}", stations?);
-
+fn main() -> Result<(), Box<dyn Error>> {
     let playback_counter = Arc::new(AtomicU64::new(0));
     let (reader, writer) = Processor::new(playback_counter.clone()).split();
 
-    tokio::task::spawn_blocking(|| {
+    std::thread::spawn(|| {
         let playback_done_signal = Signal::new();
         let (producer, consumer) = RingBuffer::new(10000);
         let playback = Playback::new(consumer, playback_done_signal.clone(), playback_counter);
@@ -87,6 +68,5 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Exit the user interface.
     tui.exit()?;
-
     Ok(())
 }

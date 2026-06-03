@@ -14,6 +14,7 @@ pub struct AudioController {
     audio_buffer: rtrb::Producer<f32>,
     playback_done_signal: Signal,
     processor_writer: ProcessorWriter,
+    volume_percent: u32,
 }
 
 impl AudioController {
@@ -26,6 +27,7 @@ impl AudioController {
             audio_buffer,
             playback_done_signal,
             processor_writer,
+            volume_percent: 100,
         }
     }
     pub fn start_stream(&mut self, url: &str) {
@@ -106,6 +108,7 @@ impl AudioController {
                     // Copy the audio samples from the generic audio buffer to the vector in interleaved
                     // order. The sample format to convert to is inferred from the type of the Vec.
                     audio_buf.copy_to_slice_interleaved(&mut samples);
+
                     while !self.audio_buffer.push_entire_slice(&samples).is_ok() {}
                     self.processor_writer.write_bytes(&samples);
 

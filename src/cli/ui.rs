@@ -2,13 +2,14 @@ use std::iter::repeat_n;
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, RenderDirection, Sparkline},
+    symbols::border,
+    text::{Line, Span, Text},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, RenderDirection, Sparkline, Wrap},
 };
 
-use crate::cli::app::App;
+use crate::cli::app::{App, Screen};
 
 pub fn render(app: &mut App, frame: &mut Frame) {
     let constraints = [Constraint::Length(1), Constraint::Fill(1)];
@@ -22,6 +23,80 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     frame.render_widget(title.centered(), top);
 
     render_sparkline(app, frame, first);
+    render_search_screen(app, frame);
+    render_exit_screen(app, frame);
+}
+
+fn render_exit_screen(app: &mut App, frame: &mut Frame) {
+    if let Screen::Quit = app.screen {
+        let title = Line::from(" Exit ".bold());
+        let instructions = Line::from(vec![" Y".yellow().into(), "es ".into()]);
+
+        let no_instruction = Line::from(vec![" N".red().bold(), "o ".into()]);
+        let block = Block::bordered()
+            .title(title.left_aligned())
+            .title_bottom(instructions.left_aligned())
+            .title_bottom(no_instruction.right_aligned())
+            .border_set(border::THICK);
+
+        let counter_text = Text::from(vec![Line::from(vec![
+            "Are you sure you would like to quit? ".into(),
+        ])]);
+
+        let exit_paragraph = Paragraph::new(counter_text).centered().block(block);
+
+        let clear_area = centered_rect(42, 22, frame.area());
+        frame.render_widget(Clear, clear_area); //this clears the entire screen and anything already drawn
+
+        let area = centered_rect(40, 20, frame.area());
+        frame.render_widget(exit_paragraph, area);
+    }
+}
+
+fn render_search_screen(app: &mut App, frame: &mut Frame) {
+    if let Screen::Search = app.screen {
+        let title = Line::from(" Search ".bold());
+        let search_query = app.search_query().to_string();
+        let instructions = if search_query.is_empty() {
+            Line::from("Type to search".gray())
+        } else {
+            Line::from(search_query.white())
+        };
+
+        let content = match app.radio_state() {
+            crate::radio::RadioState::Pending => {
+                vec![instructions, Line::from("Loading stations...".blue())]
+            }
+            crate::radio::RadioState::Error(_) => vec![
+                instructions,
+                Line::from("An error occured loading stations".red()),
+            ],
+            crate::radio::RadioState::Complete(api_stations) => {
+                let mut v = vec![instructions];
+                let mut iter = api_stations.into_iter().skip(app.song_selected());
+
+                v.extend(
+                    (&mut iter)
+                        .take(1)
+                        .map(|s| Line::from(s.name.white()).on_green()),
+                );
+                v.extend(iter.map(|s| Line::from(s.name.green())));
+                v
+            }
+        };
+
+        let title_bottom = Line::from(" Esc to close search ".bold());
+        let block = Block::bordered()
+            .title(title.left_aligned())
+            .title_bottom(title_bottom.right_aligned())
+            .border_set(border::THICK);
+        let search_paragraph = Paragraph::new(content).centered().block(block);
+        let clear_area = centered_rect(42, 22, frame.area());
+        frame.render_widget(Clear, clear_area); //this clears the entire screen and anything already drawn
+
+        let area = centered_rect(40, 20, frame.area());
+        frame.render_widget(search_paragraph, area);
+    }
 }
 
 /// Render a sparkline with some sample data.
@@ -47,22 +122,25 @@ pub fn render_sparkline(app: &mut App, frame: &mut Frame, area: Rect) {
     frame.render_widget(sparkline, area);
 }
 
-/// Render a sin wave based on the current frame count.
-pub fn render_sin_wave(frame: &mut Frame, area: Rect) {
-    let phase_shift = frame.count() as f64 * 0.2;
-    let data: Vec<u64> = (0..area.width)
-        .map(|v| {
-            let angle = f64::from(v) * 0.5 + phase_shift;
-            ((angle.sin() * 3.0 + 3.0) * 10.0).round() as u64
-        })
-        .collect();
+/// helper function to create a centered rect using up certain percentage of the available rect `r`
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    // Cut the given rectangle into three vertical pieces
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
 
-    let sparkline = Sparkline::default()
-        .data(&data)
-        .max(100)
-        .direction(RenderDirection::RightToLeft)
-        .style(Style::default().magenta().on_black())
-        .absent_value_style(Color::Red);
-
-    frame.render_widget(sparkline, area);
+    // Then cut the middle vertical piece into three width-wise pieces
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1] // Return the middle chunk
 }
