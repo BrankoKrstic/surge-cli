@@ -3,6 +3,7 @@ use std::{io, iter::repeat_n};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 
 use crate::{
+    controller::AudioController,
     processor::ProcessorReader,
     radio::{RadioApiFetcher, RadioState},
 };
@@ -18,6 +19,8 @@ pub struct App {
     search_query: String,
     radio: RadioApiFetcher,
     selected_idx: usize,
+    audio_controller: AudioController,
+    muted: bool,
 }
 
 pub struct FrequencyState {
@@ -29,7 +32,7 @@ pub enum Direction {
     Down,
 }
 impl App {
-    pub fn new(reader: ProcessorReader) -> Self {
+    pub fn new(reader: ProcessorReader, audio_controller: AudioController) -> Self {
         Self {
             processor_reader: reader,
             freq: FrequencyState {
@@ -42,6 +45,8 @@ impl App {
             search_query: String::new(),
             radio: RadioApiFetcher::new(),
             selected_idx: 0,
+            audio_controller,
+            muted: false,
         }
     }
     pub fn search_query(&self) -> &str {
@@ -55,6 +60,21 @@ impl App {
     pub fn song_selected(&self) -> usize {
         self.selected_idx
     }
+    pub fn change_station(&mut self) {
+        match self.radio_state() {
+            RadioState::Complete(api_stations) => {
+                if let Some(station) = api_stations.get(self.selected_idx) {
+                    self.audio_controller.load_stream(station.url.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    pub fn toggle_mute(&mut self) {
+        self.muted = !self.muted;
+        self.audio_controller
+            .set_volume(if self.muted { 0 } else { self.volume });
+    }
     pub fn pop_char(&mut self) {
         self.selected_idx = 0;
         if self.search_query.pop().is_some() {
@@ -62,10 +82,18 @@ impl App {
         }
     }
     pub fn volume_up(&mut self) {
+        if (self.muted) {
+            self.muted = false;
+        }
         self.volume = (self.volume + 5).max(150);
+        self.audio_controller.set_volume(self.volume);
     }
     pub fn volume_down(&mut self) {
+        if (self.muted) {
+            self.muted = false
+        }
         self.volume = self.volume.saturating_sub(5);
+        self.audio_controller.set_volume(self.volume);
     }
     pub fn search_radio_station(&mut self, name: &str) {
         self.radio.query(name);

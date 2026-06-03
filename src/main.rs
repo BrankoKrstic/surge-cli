@@ -25,20 +25,10 @@ use surge::{
 fn main() -> Result<(), Box<dyn Error>> {
     let playback_counter = Arc::new(AtomicU64::new(0));
     let (reader, writer) = Processor::new(playback_counter.clone()).split();
+    let mut audio = AudioController::new(writer, playback_counter);
+    audio.load_stream("https://media.radioexs.com/stream/jackradio".to_string());
 
-    std::thread::spawn(|| {
-        let playback_done_signal = Signal::new();
-        let (producer, consumer) = RingBuffer::new(10000);
-        let playback = Playback::new(consumer, playback_done_signal.clone(), playback_counter);
-
-        std::thread::spawn(move || playback.run());
-
-        let mut audio = AudioController::new(producer, playback_done_signal, writer);
-
-        audio.start_stream("https://media.radioexs.com/stream/jackradio");
-    });
-
-    let mut app = App::new(reader);
+    let mut app = App::new(reader, audio);
 
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(std::io::stderr());
