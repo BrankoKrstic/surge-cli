@@ -49,6 +49,9 @@ impl App {
             muted: false,
         }
     }
+    pub fn volume(&self) -> u32 {
+        self.volume
+    }
     pub fn search_query(&self) -> &str {
         &self.search_query[..]
     }
@@ -64,7 +67,8 @@ impl App {
         match self.radio_state() {
             RadioState::Complete(api_stations) => {
                 if let Some(station) = api_stations.get(self.selected_idx) {
-                    self.audio_controller.load_stream(station.url.to_string());
+                    self.audio_controller
+                        .load_stream(station.url_resolved.to_string());
                 }
             }
             _ => {}
@@ -85,7 +89,7 @@ impl App {
         if (self.muted) {
             self.muted = false;
         }
-        self.volume = (self.volume + 5).max(150);
+        self.volume = (self.volume + 5).min(150);
         self.audio_controller.set_volume(self.volume);
     }
     pub fn volume_down(&mut self) {

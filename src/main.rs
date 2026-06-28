@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let playback_counter = Arc::new(AtomicU64::new(0));
     let (reader, writer) = Processor::new(playback_counter.clone()).split();
     let mut audio = AudioController::new(writer, playback_counter);
-    audio.load_stream("https://media.radioexs.com/stream/jackradio".to_string());
+    audio.load_stream("http://naxi48.streaming.rs:9180/".to_string());
 
     let mut app = App::new(reader, audio);
 

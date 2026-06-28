@@ -18,6 +18,11 @@ pub struct Playback {
     playback_counter: Arc<AtomicU64>,
 }
 
+pub struct PlaybackConfig {
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
 impl Playback {
     pub fn new(
         read_buf: rtrb::Consumer<f32>,
@@ -39,6 +44,14 @@ impl Playback {
             read_buf,
             playback_done,
             playback_counter,
+        }
+    }
+
+    pub fn get_config(&self) -> PlaybackConfig {
+        let config = self.config.config();
+        PlaybackConfig {
+            sample_rate: config.sample_rate,
+            channels: config.channels,
         }
     }
     pub fn run(mut self) {
@@ -65,7 +78,6 @@ impl Playback {
             x => panic!("Unsupported sample format {:?}", x),
         }
         .unwrap();
-
         stream.play().unwrap();
 
         self.playback_done.wait();

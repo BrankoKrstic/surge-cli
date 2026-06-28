@@ -16,7 +16,11 @@ use symphonia::{
     default::get_probe,
 };
 
-use crate::{play::Playback, processor::ProcessorWriter, signal::Signal};
+use crate::{
+    play::{Playback, PlaybackConfig},
+    processor::ProcessorWriter,
+    signal::Signal,
+};
 
 enum AudioPlaybackMessage {
     Quit,
@@ -31,35 +35,37 @@ pub struct AudioController {
 
 impl AudioController {
     pub fn new(writer: ProcessorWriter, playback_counter: Arc<AtomicU64>) -> Self {
-        println!("I AM HERE NOW");
         let playback_done_signal = Signal::new();
         let (producer, consumer) = RingBuffer::new(10000);
         let playback = Playback::new(consumer, playback_done_signal.clone(), playback_counter);
-
+        let playback_config = playback.get_config();
         std::thread::spawn(move || playback.run());
 
         let (tx, rx) = channel();
-        let decoder = AudioDecoder::new(producer, playback_done_signal, writer, rx);
+        let decoder =
+            AudioDecoder::new(producer, playback_done_signal, writer, rx, playback_config);
 
         std::thread::spawn(|| decoder.run());
         Self { playback_tx: tx }
     }
     pub fn set_volume(&mut self, volume: u32) {
-        self.playback_tx
+        let _ = self
+            .playback_tx
             .send(AudioPlaybackMessage::SetVolume(volume));
     }
     pub fn load_stream(&mut self, stream_url: String) {
-        self.playback_tx
+        let _ = self
+            .playback_tx
             .send(AudioPlaybackMessage::LoadStream(stream_url));
     }
     pub fn stop_stream(&mut self) {
-        self.playback_tx.send(AudioPlaybackMessage::StopStream);
+        let _ = self.playback_tx.send(AudioPlaybackMessage::StopStream);
     }
 }
 
 impl Drop for AudioController {
     fn drop(&mut self) {
-        self.playback_tx.send(AudioPlaybackMessage::Quit);
+        let _ = self.playback_tx.send(AudioPlaybackMessage::Quit);
     }
 }
 
@@ -71,6 +77,7 @@ struct AudioDecoder {
     controller_rx: Receiver<AudioPlaybackMessage>,
     stream: Option<AudioStream>,
     sample_buf: Vec<f32>,
+    playback_config: PlaybackConfig,
 }
 
 impl AudioDecoder {
@@ -79,6 +86,7 @@ impl AudioDecoder {
         playback_done_signal: Signal,
         processor_writer: ProcessorWriter,
         controller_rx: Receiver<AudioPlaybackMessage>,
+        playback_config: PlaybackConfig,
     ) -> Self {
         Self {
             audio_buffer,
@@ -88,6 +96,7 @@ impl AudioDecoder {
             controller_rx,
             stream: None,
             sample_buf: vec![],
+            playback_config,
         }
     }
     fn run(mut self) {
@@ -115,6 +124,9 @@ impl AudioDecoder {
     fn try_decode_samples(&mut self) {
         if let Some(stream) = self.stream.as_mut() {
             if stream.decode_samples(&mut self.sample_buf).is_ok() {
+                for frame in &mut self.sample_buf {
+                    *frame *= (self.volume_percent as f32 / 100.0);
+                }
                 while !self
                     .audio_buffer
                     .push_entire_slice(&self.sample_buf)

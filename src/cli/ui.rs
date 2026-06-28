@@ -19,6 +19,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let title = Line::from_iter([
         Span::from("Sparkline Widget").bold(),
         Span::from(" (Press 'q' to quit)"),
+        Span::from(format!(" Volume: {}%", app.volume())),
     ]);
     frame.render_widget(title.centered(), top);
 

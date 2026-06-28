@@ -13,7 +13,6 @@ pub fn update(app: &mut App, key_event: KeyEvent) {
         (KeyCode::Char('m') | KeyCode::Char('M'), Screen::Main) => app.toggle_mute(),
         (KeyCode::Char('+'), Screen::Main) => app.volume_up(),
         (KeyCode::Char('-'), Screen::Main) => app.volume_down(),
-
         (KeyCode::Char('c') | KeyCode::Char('C'), _)
             if key_event.modifiers == KeyModifiers::CONTROL =>
         {
