@@ -4,6 +4,10 @@ use std::sync::{
     mpsc::{Receiver, Sender, channel},
 };
 
+use rubato::{Fft, FixedSync, Indexing, Resampler};
+
+use audioadapter_buffers::direct::InterleavedSlice;
+
 use anyhow::{self, Context, Error};
 use rtrb::RingBuffer;
 use symphonia::{
@@ -76,8 +80,11 @@ struct AudioDecoder {
     volume_percent: u32,
     controller_rx: Receiver<AudioPlaybackMessage>,
     stream: Option<AudioStream>,
-    sample_buf: Vec<f32>,
     playback_config: PlaybackConfig,
+    input_buf: [f32; 15_000],
+    input_buf_size: usize,
+    output_buf: [f32; 20_000],
+    output_buf_size: usize,
 }
 
 impl AudioDecoder {
@@ -95,8 +102,11 @@ impl AudioDecoder {
             volume_percent: 100,
             controller_rx,
             stream: None,
-            sample_buf: vec![],
             playback_config,
+            input_buf: [0.0; 15_000],
+            input_buf_size: 0,
+            output_buf: [0.0; 20_000],
+            output_buf_size: 0,
         }
     }
     fn run(mut self) {
@@ -108,7 +118,7 @@ impl AudioDecoder {
                         self.volume_percent = volume_percent
                     }
                     AudioPlaybackMessage::LoadStream(stream) => {
-                        if let Ok(stream) = AudioStream::connect(stream) {
+                        if let Ok(stream) = AudioStream::connect(stream, self.playback_config) {
                             self.stream = Some(stream);
                         }
                     }
@@ -121,19 +131,92 @@ impl AudioDecoder {
             self.try_decode_samples()
         }
     }
+    fn resample(&mut self) {
+        let Some(stream) = self.stream.as_mut() else {
+            return;
+        };
+        let mut frames_needed = stream.resampler.input_frames_next();
+        let mut out_cap = self.output_buf.len() / self.playback_config.channels as usize;
+        // wrap it with an InterleavedSlice Adapter
+        let nbr_input_frames = self.input_buf_size / stream.channels;
+        let input_adapter =
+            InterleavedSlice::new(&self.input_buf, stream.channels, nbr_input_frames).unwrap();
+
+        let outdata_capacity = self.output_buf.len() / self.playback_config.channels as usize;
+        let mut output_adapter = InterleavedSlice::new_mut(
+            &mut self.output_buf,
+            self.playback_config.channels as usize,
+            outdata_capacity,
+        )
+        .unwrap();
+
+        let mut indexing = Indexing {
+            input_offset: 0,
+            output_offset: self.output_buf_size / self.playback_config.channels as usize,
+            active_channels_mask: None,
+            partial_len: None,
+        };
+
+        let mut input_frames_left = self.input_buf_size / stream.channels;
+        let mut output_frames_needed = stream.resampler.output_frames_next();
+
+        while input_frames_left >= frames_needed
+            && (indexing.output_offset + output_frames_needed) < out_cap
+        {
+            let (frames_read, frames_written) = stream
+                .resampler
+                .process_into_buffer(&input_adapter, &mut output_adapter, Some(&indexing))
+                .unwrap();
+
+            indexing.input_offset += frames_read;
+            indexing.output_offset += frames_written;
+            input_frames_left -= frames_read;
+            frames_needed = stream.resampler.input_frames_next();
+            output_frames_needed = stream.resampler.output_frames_next();
+        }
+        self.output_buf_size = indexing.output_offset * self.playback_config.channels as usize;
+
+        self.input_buf.copy_within(
+            (indexing.input_offset * stream.channels)
+                ..(indexing.input_offset + input_frames_left) * stream.channels,
+            0,
+        );
+
+        self.input_buf_size = input_frames_left * stream.channels;
+    }
     fn try_decode_samples(&mut self) {
         if let Some(stream) = self.stream.as_mut() {
-            if stream.decode_samples(&mut self.sample_buf).is_ok() {
-                for frame in &mut self.sample_buf {
-                    *frame *= (self.volume_percent as f32 / 100.0);
+            if self.input_buf_size < 10_000 {
+                if let Ok(samples_written) =
+                    stream.decode_samples(&mut self.input_buf[self.input_buf_size..])
+                {
+                    for i in self.input_buf_size..self.input_buf_size + samples_written {
+                        self.input_buf[i] *= self.volume_percent as f32 / 100.0;
+                    }
+                    self.input_buf_size += samples_written;
                 }
-                while !self
-                    .audio_buffer
-                    .push_entire_slice(&self.sample_buf)
-                    .is_ok()
-                {}
-                self.processor_writer.write_bytes(&self.sample_buf);
             }
+            self.resample();
+
+            let mut written = 0;
+            while self.output_buf_size - written > 1024 {
+                if self
+                    .audio_buffer
+                    .push_entire_slice(&self.output_buf[written..written + 1024])
+                    .is_err()
+                {
+                    break;
+                }
+
+                written += 1024;
+            }
+            self.processor_writer
+                .write_bytes(&self.output_buf[..written]);
+
+            for i in 0..(self.output_buf_size - written) {
+                self.output_buf[i] = self.output_buf[i + written];
+            }
+            self.output_buf_size = self.output_buf_size - written;
         }
     }
 }
@@ -148,10 +231,13 @@ struct AudioStream {
     decoder: Box<dyn audio::AudioDecoder>,
     format: Box<dyn FormatReader>,
     track_id: u32,
+    sample_rate: u32,
+    channels: usize,
+    resampler: Fft<f32>,
 }
 
 impl AudioStream {
-    fn connect(url: String) -> Result<Self, Error> {
+    fn connect(url: String, playback_config: PlaybackConfig) -> Result<Self, Error> {
         let response = reqwest::blocking::get(url).expect("Failed to connect to stream");
         let reader = ReadOnlySource::new(response);
 
@@ -185,14 +271,38 @@ impl AudioStream {
             .expect("unsupported codec");
 
         let track_id = track.id;
+
+        let audio_params = track.codec_params.as_ref().unwrap().audio().unwrap();
+
+        let sample_rate = audio_params.sample_rate.unwrap_or(44100);
+
+        let channels = audio_params
+            .channels
+            .as_ref()
+            .map(|c| c.count())
+            .unwrap_or(2);
+
+        let mut resampler = Fft::<f32>::new(
+            sample_rate as usize,
+            playback_config.sample_rate as usize,
+            1024,
+            2,
+            channels,
+            FixedSync::Both,
+        )
+        .unwrap();
+
         Ok(Self {
             format,
             decoder,
             track_id,
+            sample_rate,
+            channels,
+            resampler,
         })
     }
 
-    fn decode_samples(&mut self, sample_buf: &mut Vec<f32>) -> anyhow::Result<()> {
+    fn decode_samples(&mut self, sample_buf: &mut [f32]) -> anyhow::Result<usize> {
         let packet = match self.format.next_packet() {
             Ok(Some(packet)) => packet,
             Ok(None) => {
@@ -228,12 +338,12 @@ impl AudioStream {
         // Decode the packet into audio samples.
         match self.decoder.decode(&packet) {
             Ok(audio_buf) => {
-                sample_buf.resize(audio_buf.samples_interleaved(), 0.0);
+                let sample_count = audio_buf.samples_interleaved();
 
                 // Copy the audio samples from the generic audio buffer to the vector in interleaved
                 // order. The sample format to convert to is inferred from the type of the Vec.
-                audio_buf.copy_to_slice_interleaved(sample_buf);
-                Ok(())
+                audio_buf.copy_to_slice_interleaved(&mut sample_buf[..sample_count]);
+                Ok(sample_count)
             }
             Err(symphonia::core::errors::Error::IoError(e)) => {
                 return Err(e).with_context(|| "failed to decode packet due to IO error");

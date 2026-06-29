@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
+audioadapter-buffers = "3.0.0"
 clap = { version = "4.6.1", features = ["derive"] }
 color-eyre = "0.6.5"
 cpal = { version = "0.17.3", features = ["jack"] }
@@ -16,5 +17,6 @@ ratatui = "0.30.0"
 reqwest = { version = "0.13.3", features = ["blocking"] }
 ringbuf = "0.5.0"
 rtrb = "0.3.4"
+rubato = "3.0.0"
 symphonia = { version = "0.6.0", features = ["all"] }
 zerocopy = { version = "0.8.48", features = ["derive", "std", "zerocopy-derive"] }

@@ -18,6 +18,7 @@ pub struct Playback {
     playback_counter: Arc<AtomicU64>,
 }
 
+#[derive(Clone, Copy)]
 pub struct PlaybackConfig {
     pub sample_rate: u32,
     pub channels: u16,
