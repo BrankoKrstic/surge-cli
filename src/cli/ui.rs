@@ -2,11 +2,11 @@ use std::iter::repeat_n;
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Style, Stylize},
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Stylize},
     symbols::border,
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, RenderDirection, Sparkline, Wrap},
+    widgets::{Block, Clear, Paragraph, RenderDirection, Sparkline},
 };
 
 use crate::cli::app::{App, Screen};
@@ -31,7 +31,7 @@ pub fn render(app: &mut App, frame: &mut Frame) {
 fn render_exit_screen(app: &mut App, frame: &mut Frame) {
     if let Screen::Quit = app.screen {
         let title = Line::from(" Exit ".bold());
-        let instructions = Line::from(vec![" Y".yellow().into(), "es ".into()]);
+        let instructions = Line::from(vec![" Y".yellow(), "es ".into()]);
 
         let no_instruction = Line::from(vec![" N".red().bold(), "o ".into()]);
         let block = Block::bordered()
@@ -109,8 +109,7 @@ pub fn render_sparkline(app: &mut App, frame: &mut Frame, area: Rect) {
     let data = app
         .bars()
         .iter()
-        .map(|item| repeat_n(item, 2))
-        .flatten()
+        .flat_map(|item| repeat_n(item, 2))
         .map(|&b| (b * 100.0).round() as u64)
         .collect::<Vec<_>>();
 

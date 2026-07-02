@@ -5,9 +5,7 @@ use std::{
 };
 
 use crossterm::event;
-use radiobrowser::{RadioBrowserAPI, StationOrder};
-use ratatui::{DefaultTerminal, Frame, Terminal, prelude::CrosstermBackend};
-use rtrb::RingBuffer;
+use ratatui::{Terminal, prelude::CrosstermBackend};
 use surge::{
     cli::{
         app::App,
@@ -16,10 +14,7 @@ use surge::{
         update::update,
     },
     controller::AudioController,
-    play::Playback,
     processor::Processor,
-    radio::RadioApiFetcher,
-    signal::Signal,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -33,7 +28,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(std::io::stderr());
     let terminal = Terminal::new(backend)?;
-    let events = EventHandler::new(250);
+    let events = EventHandler::new();
     let mut tui = Tui::new(terminal, events);
     tui.enter()?;
 

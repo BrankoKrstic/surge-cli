@@ -1,10 +1,6 @@
 use crossterm::event;
 use ratatui::crossterm::event::{KeyEvent, MouseEvent};
-use std::{
-    sync::mpsc,
-    thread,
-    time::{Duration, Instant},
-};
+use std::{sync::mpsc, thread};
 
 use color_eyre::Result;
 
@@ -22,18 +18,13 @@ pub enum Event {
 /// Terminal event handler.
 #[derive(Debug)]
 pub struct EventHandler {
-    /// Event receiver channel.
     receiver: mpsc::Receiver<Event>,
-    /// Event handler thread.
-    handler: thread::JoinHandle<()>,
 }
 
 impl EventHandler {
-    /// Constructs a new instance of [`EventHandler`].
-    pub fn new(tick_rate: u64) -> Self {
-        let tick_rate = Duration::from_millis(tick_rate);
+    pub fn new() -> Self {
         let (sender, receiver) = mpsc::channel();
-        let handler = {
+        let _ = {
             let sender = sender.clone();
             thread::spawn(move || {
                 loop {
@@ -41,7 +32,7 @@ impl EventHandler {
                         crossterm::event::Event::Key(e) if e.kind == event::KeyEventKind::Press => {
                             sender.send(Event::Key(e))
                         }
-                        crossterm::event::Event::Key(e) => Ok(()),
+                        crossterm::event::Event::Key(_) => Ok(()),
                         crossterm::event::Event::Mouse(e) => sender.send(Event::Mouse(e)),
                         crossterm::event::Event::Resize(w, h) => sender.send(Event::Resize(w, h)),
                         _ => unimplemented!(),
@@ -52,13 +43,9 @@ impl EventHandler {
                 }
             })
         };
-        Self { receiver, handler }
+        Self { receiver }
     }
 
-    /// Receive the next event from the handler thread.
-    ///
-    /// This function will always block the current thread if
-    /// there is no data available and it's possible for more data to be sent.
     pub fn next(&self) -> Result<Event> {
         Ok(self.receiver.recv()?)
     }
@@ -70,5 +57,11 @@ impl EventHandler {
                 mpsc::TryRecvError::Disconnected => Err(err)?,
             },
         }
+    }
+}
+
+impl Default for EventHandler {
+    fn default() -> Self {
+        Self::new()
     }
 }

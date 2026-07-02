@@ -1,6 +1,4 @@
-use std::error::Error;
-
-use oneshot::{Receiver, channel};
+use oneshot::Receiver;
 use radiobrowser::{ApiStation, StationOrder, blocking::RadioBrowserAPI};
 
 pub struct RadioApiFetcher {
@@ -59,6 +57,12 @@ impl RadioApiFetcher {
     }
     pub fn poll_state(&mut self) -> RadioState {
         self.poll_channel();
-        return self.state.clone();
+        self.state.clone()
+    }
+}
+
+impl Default for RadioApiFetcher {
+    fn default() -> Self {
+        Self::new()
     }
 }

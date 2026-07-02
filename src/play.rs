@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use cpal::{
-    Device, Sample, SampleFormat, StreamConfig, SupportedStreamConfig,
+    Device, Sample, SampleFormat, SupportedStreamConfig,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 
@@ -62,7 +62,7 @@ impl Playback {
         let stream = match self.config.sample_format() {
             SampleFormat::F32 => self.device.build_output_stream(
                 &self.config.config(),
-                move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     let (copied, remaining) = self.read_buf.pop_partial_slice(data);
 
                     self.playback_counter

@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicU32, AtomicU64},
+    atomic::AtomicU64,
     mpsc::{Receiver, Sender, channel},
 };
 
@@ -136,7 +136,7 @@ impl AudioDecoder {
             return;
         };
         let mut frames_needed = stream.resampler.input_frames_next();
-        let mut out_cap = self.output_buf.len() / self.playback_config.channels as usize;
+        let out_cap = self.output_buf.len() / self.playback_config.channels as usize;
         // wrap it with an InterleavedSlice Adapter
         let nbr_input_frames = self.input_buf_size / stream.channels;
         let input_adapter =
@@ -186,16 +186,16 @@ impl AudioDecoder {
     }
     fn try_decode_samples(&mut self) {
         if let Some(stream) = self.stream.as_mut() {
-            if self.input_buf_size < 10_000 {
-                if let Ok(samples_written) =
+            if self.input_buf_size < 10_000
+                && let Ok(samples_written) =
                     stream.decode_samples(&mut self.input_buf[self.input_buf_size..])
-                {
-                    for i in self.input_buf_size..self.input_buf_size + samples_written {
-                        self.input_buf[i] *= self.volume_percent as f32 / 100.0;
-                    }
-                    self.input_buf_size += samples_written;
+            {
+                for i in self.input_buf_size..self.input_buf_size + samples_written {
+                    self.input_buf[i] *= self.volume_percent as f32 / 100.0;
                 }
+                self.input_buf_size += samples_written;
             }
+
             self.resample();
 
             let mut written = 0;
@@ -216,7 +216,7 @@ impl AudioDecoder {
             for i in 0..(self.output_buf_size - written) {
                 self.output_buf[i] = self.output_buf[i + written];
             }
-            self.output_buf_size = self.output_buf_size - written;
+            self.output_buf_size -= written;
         }
     }
 }
@@ -231,7 +231,6 @@ struct AudioStream {
     decoder: Box<dyn audio::AudioDecoder>,
     format: Box<dyn FormatReader>,
     track_id: u32,
-    sample_rate: u32,
     channels: usize,
     resampler: Fft<f32>,
 }
@@ -248,7 +247,7 @@ impl AudioStream {
         let fmt_opts: FormatOptions = Default::default();
         let meta_opts: MetadataOptions = Default::default();
 
-        let mut format = probe
+        let format = probe
             .probe(&Default::default(), mss, fmt_opts, meta_opts)
             .expect("Failed to probe media format");
 
@@ -258,7 +257,7 @@ impl AudioStream {
 
         let dec_opts: AudioDecoderOptions = Default::default();
 
-        let mut decoder = symphonia::default::get_codecs()
+        let decoder = symphonia::default::get_codecs()
             .make_audio_decoder(
                 track
                     .codec_params
@@ -282,7 +281,7 @@ impl AudioStream {
             .map(|c| c.count())
             .unwrap_or(2);
 
-        let mut resampler = Fft::<f32>::new(
+        let resampler = Fft::<f32>::new(
             sample_rate as usize,
             playback_config.sample_rate as usize,
             1024,
@@ -296,7 +295,6 @@ impl AudioStream {
             format,
             decoder,
             track_id,
-            sample_rate,
             channels,
             resampler,
         })
@@ -346,13 +344,13 @@ impl AudioStream {
                 Ok(sample_count)
             }
             Err(symphonia::core::errors::Error::IoError(e)) => {
-                return Err(e).with_context(|| "failed to decode packet due to IO error");
+                Err(e).with_context(|| "failed to decode packet due to IO error")
                 // The packet failed to decode due to an IO error, skip the packet.
             }
             Err(symphonia::core::errors::Error::DecodeError(_)) => {
-                return Err(anyhow::anyhow!(
+                Err(anyhow::anyhow!(
                     "failed to decode packet due to invalid data"
-                ));
+                ))
                 // The packet failed to decode due to invalid data, skip the packet.
             }
             Err(err) => {

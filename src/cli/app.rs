@@ -1,7 +1,3 @@
-use std::{io, iter::repeat_n};
-
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-
 use crate::{
     controller::AudioController,
     processor::ProcessorReader,
@@ -64,15 +60,15 @@ impl App {
         self.selected_idx
     }
     pub fn change_station(&mut self) {
-        match self.radio_state() {
-            RadioState::Complete(api_stations) => {
-                if let Some(station) = api_stations.get(self.selected_idx) {
-                    self.audio_controller
-                        .load_stream(station.url_resolved.to_string());
-                }
-            }
-            _ => {}
-        }
+        let RadioState::Complete(api_stations) = self.radio_state() else {
+            return;
+        };
+        let Some(station) = api_stations.get(self.selected_idx) else {
+            return;
+        };
+
+        self.audio_controller
+            .load_stream(station.url_resolved.to_string());
     }
     pub fn toggle_mute(&mut self) {
         self.muted = !self.muted;
@@ -86,14 +82,14 @@ impl App {
         }
     }
     pub fn volume_up(&mut self) {
-        if (self.muted) {
+        if self.muted {
             self.muted = false;
         }
         self.volume = (self.volume + 5).min(150);
         self.audio_controller.set_volume(self.volume);
     }
     pub fn volume_down(&mut self) {
-        if (self.muted) {
+        if self.muted {
             self.muted = false
         }
         self.volume = self.volume.saturating_sub(5);
@@ -121,15 +117,6 @@ impl App {
         }
     }
 
-    fn handle_events(&mut self) -> io::Result<()> {
-        match event::read()? {
-            Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                self.handle_key_event(key_event);
-            }
-            _ => {}
-        }
-        Ok(())
-    }
     pub fn bars(&self) -> &[f32] {
         &self.freq.prev_bars[..]
     }
@@ -139,12 +126,6 @@ impl App {
     }
     pub fn should_quit(&self) -> bool {
         self.exit
-    }
-    fn handle_key_event(&mut self, key_event: KeyEvent) {
-        match key_event.code {
-            KeyCode::Char('q') => self.quit(),
-            _ => {}
-        }
     }
     pub fn quit(&mut self) {
         self.exit = true;
@@ -190,7 +171,7 @@ fn normalize_freqs(app: &App, bar_count: usize) -> Vec<f32> {
         .map(|f| (f * norm_factor) as f32)
         .collect::<Vec<_>>();
 
-    let mut hz_per_bin = 44100.0 / FREQUENCY_COUNT as f32;
+    let hz_per_bin = 44100.0 / FREQUENCY_COUNT as f32;
     let min_hz = 100.0f32;
     let max_hz = 15000.0f32;
 
@@ -199,7 +180,7 @@ fn normalize_freqs(app: &App, bar_count: usize) -> Vec<f32> {
 
     let mut bars = vec![0.0; bar_count];
 
-    for bar_index in 0..bar_count {
+    for (bar_index, bar) in bars.iter_mut().enumerate() {
         let t0 = bar_index as f32 / bar_count as f32;
         let t1 = (bar_index + 1) as f32 / bar_count as f32;
 
@@ -213,7 +194,7 @@ fn normalize_freqs(app: &App, bar_count: usize) -> Vec<f32> {
         let end_bin = end_bin.min(magnitudes.len());
 
         if start_bin >= end_bin {
-            bars[bar_index] = magnitudes[start_bin];
+            *bar = magnitudes[start_bin];
             continue;
         }
 
@@ -226,7 +207,7 @@ fn normalize_freqs(app: &App, bar_count: usize) -> Vec<f32> {
             count += 1;
         }
 
-        bars[bar_index] = (power_sum / count as f32).sqrt();
+        *bar = (power_sum / count as f32).sqrt();
     }
 
     bars.into_iter()
