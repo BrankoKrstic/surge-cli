@@ -1,5 +1,5 @@
 use crate::{
-    controller::AudioController,
+    controller::{AudioController, AudioControllerEvent},
     processor::ProcessorReader,
     radio::{RadioApiFetcher, RadioState},
 };
@@ -17,18 +17,29 @@ pub struct App {
     selected_idx: usize,
     audio_controller: AudioController,
     muted: bool,
+    stream_state: StreamState,
+    sample_rate: u32,
 }
 
 pub struct FrequencyState {
     pub frequencies: [f64; FREQUENCY_COUNT],
     pub prev_bars: Vec<f32>,
 }
+pub enum StreamState {
+    Playing { name: String },
+    Error { message: String },
+}
 pub enum Direction {
     Up,
     Down,
 }
 impl App {
-    pub fn new(reader: ProcessorReader, audio_controller: AudioController) -> Self {
+    pub fn new(
+        reader: ProcessorReader,
+        audio_controller: AudioController,
+        initial_station_name: String,
+        sample_rate: u32,
+    ) -> Self {
         Self {
             processor_reader: reader,
             freq: FrequencyState {
@@ -43,10 +54,17 @@ impl App {
             selected_idx: 0,
             audio_controller,
             muted: false,
+            stream_state: StreamState::Playing {
+                name: initial_station_name,
+            },
+            sample_rate,
         }
     }
     pub fn volume(&self) -> u32 {
         self.volume
+    }
+    pub fn stream_state(&self) -> &StreamState {
+        &self.stream_state
     }
     pub fn search_query(&self) -> &str {
         &self.search_query[..]
@@ -67,6 +85,9 @@ impl App {
             return;
         };
 
+        self.stream_state = StreamState::Playing {
+            name: station.name.to_string(),
+        };
         self.audio_controller
             .load_stream(station.url_resolved.to_string());
     }
@@ -102,6 +123,14 @@ impl App {
         self.radio.poll_state()
     }
     pub fn tick(&mut self) {
+        while let Some(event) = self.audio_controller.try_next_event() {
+            match event {
+                AudioControllerEvent::StreamError(message) => {
+                    self.stream_state = StreamState::Error { message };
+                }
+            }
+        }
+
         self.freq.frequencies = self.processor_reader.query_frequencies();
     }
     pub fn move_cursor(&mut self, direction: Direction) {
@@ -137,6 +166,7 @@ pub enum Screen {
     Main,
     Search,
     Quit,
+    Help,
 }
 
 fn smooth_bars(previous: &mut Vec<f32>, target: &[f32], dt: f32) {
@@ -171,7 +201,7 @@ fn normalize_freqs(app: &App, bar_count: usize) -> Vec<f32> {
         .map(|f| (f * norm_factor) as f32)
         .collect::<Vec<_>>();
 
-    let hz_per_bin = 44100.0 / FREQUENCY_COUNT as f32;
+    let hz_per_bin = app.sample_rate as f32 / FREQUENCY_COUNT as f32;
     let min_hz = 100.0f32;
     let max_hz = 15000.0f32;
 

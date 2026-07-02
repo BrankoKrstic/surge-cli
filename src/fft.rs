@@ -9,8 +9,8 @@ pub fn fft(input: &[f64]) -> Vec<Complex<f64>> {
         return input.iter().map(Complex::from).collect();
     }
 
-    let evens: Vec<f64> = input.iter().step_by(2).map(|x| *x).collect();
-    let odds: Vec<f64> = input.iter().skip(1).step_by(2).map(|x| *x).collect();
+    let evens: Vec<f64> = input.iter().step_by(2).copied().collect();
+    let odds: Vec<f64> = input.iter().skip(1).step_by(2).copied().collect();
 
     let even = fft(&evens[..]);
     let odd = fft(&odds[..]);

@@ -17,13 +17,17 @@ use surge::{
     processor::Processor,
 };
 
+const INITIAL_STREAM_NAME: &str = "Jack Radio";
+const INITIAL_STREAM_URL: &str = "https://media.radioexs.com/stream/jackradio";
+
 fn main() -> Result<(), Box<dyn Error>> {
     let playback_counter = Arc::new(AtomicU64::new(0));
     let (reader, writer) = Processor::new(playback_counter.clone()).split();
     let mut audio = AudioController::new(writer, playback_counter);
-    audio.load_stream("https://media.radioexs.com/stream/jackradio".to_string());
+    let sample_rate = audio.playback_config().sample_rate;
+    audio.load_stream(INITIAL_STREAM_URL.to_string());
 
-    let mut app = App::new(reader, audio);
+    let mut app = App::new(reader, audio, INITIAL_STREAM_NAME.to_string(), sample_rate);
 
     // Initialize the terminal user interface.
     let backend = CrosstermBackend::new(std::io::stderr());

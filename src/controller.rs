@@ -3,6 +3,7 @@ use std::sync::{
     atomic::AtomicU64,
     mpsc::{Receiver, Sender, channel},
 };
+use std::time::Duration;
 
 use rubato::{Fft, FixedSync, Indexing, Resampler};
 
@@ -33,8 +34,15 @@ enum AudioPlaybackMessage {
     StopStream,
 }
 
+#[derive(Debug, Clone)]
+pub enum AudioControllerEvent {
+    StreamError(String),
+}
+
 pub struct AudioController {
     playback_tx: Sender<AudioPlaybackMessage>,
+    event_rx: Receiver<AudioControllerEvent>,
+    playback_config: PlaybackConfig,
 }
 
 impl AudioController {
@@ -46,11 +54,28 @@ impl AudioController {
         std::thread::spawn(move || playback.run());
 
         let (tx, rx) = channel();
-        let decoder =
-            AudioDecoder::new(producer, playback_done_signal, writer, rx, playback_config);
+        let (event_tx, event_rx) = channel();
+        let decoder = AudioDecoder::new(
+            producer,
+            playback_done_signal,
+            writer,
+            rx,
+            event_tx,
+            playback_config,
+        );
 
         std::thread::spawn(|| decoder.run());
-        Self { playback_tx: tx }
+        Self {
+            playback_tx: tx,
+            event_rx,
+            playback_config,
+        }
+    }
+    pub fn playback_config(&self) -> PlaybackConfig {
+        self.playback_config
+    }
+    pub fn try_next_event(&mut self) -> Option<AudioControllerEvent> {
+        self.event_rx.try_recv().ok()
     }
     pub fn set_volume(&mut self, volume: u32) {
         let _ = self
@@ -79,12 +104,14 @@ struct AudioDecoder {
     processor_writer: ProcessorWriter,
     volume_percent: u32,
     controller_rx: Receiver<AudioPlaybackMessage>,
+    event_tx: Sender<AudioControllerEvent>,
     stream: Option<AudioStream>,
     playback_config: PlaybackConfig,
     input_buf: [f32; 15_000],
     input_buf_size: usize,
     output_buf: [f32; 20_000],
     output_buf_size: usize,
+    decode_error_count: u32,
 }
 
 impl AudioDecoder {
@@ -93,6 +120,7 @@ impl AudioDecoder {
         playback_done_signal: Signal,
         processor_writer: ProcessorWriter,
         controller_rx: Receiver<AudioPlaybackMessage>,
+        event_tx: Sender<AudioControllerEvent>,
         playback_config: PlaybackConfig,
     ) -> Self {
         Self {
@@ -101,12 +129,14 @@ impl AudioDecoder {
             processor_writer,
             volume_percent: 100,
             controller_rx,
+            event_tx,
             stream: None,
             playback_config,
             input_buf: [0.0; 15_000],
             input_buf_size: 0,
             output_buf: [0.0; 20_000],
             output_buf_size: 0,
+            decode_error_count: 0,
         }
     }
     fn run(mut self) {
@@ -118,8 +148,14 @@ impl AudioDecoder {
                         self.volume_percent = volume_percent
                     }
                     AudioPlaybackMessage::LoadStream(stream) => {
-                        if let Ok(stream) = AudioStream::connect(stream, self.playback_config) {
-                            self.stream = Some(stream);
+                        match AudioStream::connect(stream, self.playback_config) {
+                            Ok(stream) => {
+                                self.decode_error_count = 0;
+                                self.stream = Some(stream)
+                            }
+                            Err(err) => {
+                                self.fail_stream(format!("Failed to load stream: {err}"));
+                            }
                         }
                     }
                     AudioPlaybackMessage::StopStream => {
@@ -128,19 +164,34 @@ impl AudioDecoder {
                 }
                 continue;
             }
+            if self.stream.is_none() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
             self.try_decode_samples()
         }
     }
-    fn resample(&mut self) {
+    fn report_stream_error(&self, message: String) {
+        let _ = self
+            .event_tx
+            .send(AudioControllerEvent::StreamError(message));
+    }
+    fn fail_stream(&mut self, message: String) {
+        self.stream = None;
+        self.input_buf_size = 0;
+        self.output_buf_size = 0;
+        self.report_stream_error(message);
+    }
+    fn resample(&mut self) -> anyhow::Result<()> {
         let Some(stream) = self.stream.as_mut() else {
-            return;
+            return Ok(());
         };
         let mut frames_needed = stream.resampler.input_frames_next();
         let out_cap = self.output_buf.len() / self.playback_config.channels as usize;
         // wrap it with an InterleavedSlice Adapter
         let nbr_input_frames = self.input_buf_size / stream.channels;
         let input_adapter =
-            InterleavedSlice::new(&self.input_buf, stream.channels, nbr_input_frames).unwrap();
+            InterleavedSlice::new(&self.input_buf, stream.channels, nbr_input_frames)
+                .map_err(|err| anyhow::anyhow!("failed to prepare resampler input: {err}"))?;
 
         let outdata_capacity = self.output_buf.len() / self.playback_config.channels as usize;
         let mut output_adapter = InterleavedSlice::new_mut(
@@ -148,7 +199,7 @@ impl AudioDecoder {
             self.playback_config.channels as usize,
             outdata_capacity,
         )
-        .unwrap();
+        .map_err(|err| anyhow::anyhow!("failed to prepare resampler output: {err}"))?;
 
         let mut indexing = Indexing {
             input_offset: 0,
@@ -166,7 +217,7 @@ impl AudioDecoder {
             let (frames_read, frames_written) = stream
                 .resampler
                 .process_into_buffer(&input_adapter, &mut output_adapter, Some(&indexing))
-                .unwrap();
+                .map_err(|err| anyhow::anyhow!("failed to resample stream: {err}"))?;
 
             indexing.input_offset += frames_read;
             indexing.output_offset += frames_written;
@@ -183,41 +234,66 @@ impl AudioDecoder {
         );
 
         self.input_buf_size = input_frames_left * stream.channels;
+        Ok(())
     }
     fn try_decode_samples(&mut self) {
-        if let Some(stream) = self.stream.as_mut() {
-            if self.input_buf_size < 10_000
-                && let Ok(samples_written) =
-                    stream.decode_samples(&mut self.input_buf[self.input_buf_size..])
-            {
-                for i in self.input_buf_size..self.input_buf_size + samples_written {
-                    self.input_buf[i] *= self.volume_percent as f32 / 100.0;
-                }
-                self.input_buf_size += samples_written;
-            }
-
-            self.resample();
-
-            let mut written = 0;
-            while self.output_buf_size - written > 1024 {
-                if self
-                    .audio_buffer
-                    .push_entire_slice(&self.output_buf[written..written + 1024])
-                    .is_err()
-                {
-                    break;
-                }
-
-                written += 1024;
-            }
-            self.processor_writer
-                .write_bytes(&self.output_buf[..written]);
-
-            for i in 0..(self.output_buf_size - written) {
-                self.output_buf[i] = self.output_buf[i + written];
-            }
-            self.output_buf_size -= written;
+        if self.stream.is_none() {
+            return;
         }
+
+        if self.input_buf_size < 10_000 {
+            let start = self.input_buf_size;
+            let samples_written = {
+                let Some(stream) = self.stream.as_mut() else {
+                    return;
+                };
+                stream.decode_samples(&mut self.input_buf[start..])
+            };
+
+            match samples_written {
+                Ok(samples_written) => {
+                    let end = start + samples_written;
+                    for i in start..end {
+                        self.input_buf[i] *= self.volume_percent as f32 / 100.0;
+                    }
+                    self.input_buf_size = end;
+                    self.decode_error_count = 0;
+                }
+                Err(err) => {
+                    if self.decode_error_count >= 5 {
+                        self.fail_stream(err.to_string());
+                    } else {
+                        self.decode_error_count += 1;
+                    }
+                    return;
+                }
+            }
+        }
+
+        if let Err(err) = self.resample() {
+            self.fail_stream(err.to_string());
+            return;
+        }
+
+        let mut written = 0;
+        while self.output_buf_size - written > 1024 {
+            if self
+                .audio_buffer
+                .push_entire_slice(&self.output_buf[written..written + 1024])
+                .is_err()
+            {
+                break;
+            }
+
+            written += 1024;
+        }
+        self.processor_writer
+            .write_bytes(&self.output_buf[..written]);
+
+        for i in 0..(self.output_buf_size - written) {
+            self.output_buf[i] = self.output_buf[i + written];
+        }
+        self.output_buf_size -= written;
     }
 }
 
@@ -237,7 +313,10 @@ struct AudioStream {
 
 impl AudioStream {
     fn connect(url: String, playback_config: PlaybackConfig) -> Result<Self, Error> {
-        let response = reqwest::blocking::get(url).expect("Failed to connect to stream");
+        let response = reqwest::blocking::get(url)
+            .with_context(|| "failed to connect to stream")?
+            .error_for_status()
+            .with_context(|| "stream returned an error response")?;
         let reader = ReadOnlySource::new(response);
 
         let mss = MediaSourceStream::new(Box::new(reader), Default::default());
@@ -249,29 +328,26 @@ impl AudioStream {
 
         let format = probe
             .probe(&Default::default(), mss, fmt_opts, meta_opts)
-            .expect("Failed to probe media format");
+            .with_context(|| "failed to probe media format")?;
 
         let track = format
             .default_track(TrackType::Audio)
-            .expect("no audio track");
+            .ok_or_else(|| anyhow::anyhow!("no audio track"))?;
 
         let dec_opts: AudioDecoderOptions = Default::default();
 
+        let audio_params = track
+            .codec_params
+            .as_ref()
+            .context("codec parameters missing")?
+            .audio()
+            .context("audio codec parameters missing")?;
+
         let decoder = symphonia::default::get_codecs()
-            .make_audio_decoder(
-                track
-                    .codec_params
-                    .as_ref()
-                    .expect("codec parameters missing")
-                    .audio()
-                    .unwrap(),
-                &dec_opts,
-            )
-            .expect("unsupported codec");
+            .make_audio_decoder(audio_params, &dec_opts)
+            .with_context(|| "unsupported codec")?;
 
         let track_id = track.id;
-
-        let audio_params = track.codec_params.as_ref().unwrap().audio().unwrap();
 
         let sample_rate = audio_params.sample_rate.unwrap_or(44100);
 
@@ -289,7 +365,7 @@ impl AudioStream {
             channels,
             FixedSync::Both,
         )
-        .unwrap();
+        .map_err(|err| anyhow::anyhow!("failed to create resampler: {err}"))?;
 
         Ok(Self {
             format,
@@ -301,22 +377,18 @@ impl AudioStream {
     }
 
     fn decode_samples(&mut self, sample_buf: &mut [f32]) -> anyhow::Result<usize> {
-        let packet = match self.format.next_packet() {
-            Ok(Some(packet)) => packet,
-            Ok(None) => {
-                // Reached the end of the stream.
-                return Err(anyhow::anyhow!("End of stream"));
-            }
-            Err(symphonia::core::errors::Error::ResetRequired) => {
-                // The track list has been changed. Re-examine it and create a new set of decoders,
-                // then restart the decode loop. This is an advanced feature and it is not
-                // unreasonable to consider this "the end." As of v0.5.0, the only usage of this is
-                // for chained OGG physical streams.
-                unimplemented!();
-            }
-            Err(err) => {
-                // A unrecoverable error occurred, halt decoding.
-                panic!("{}", err);
+        let packet = loop {
+            let packet = match self.format.next_packet() {
+                Ok(Some(packet)) => packet,
+                Ok(None) => return Err(anyhow::anyhow!("end of stream")),
+                Err(symphonia::core::errors::Error::ResetRequired) => {
+                    return Err(anyhow::anyhow!("stream reset required"));
+                }
+                Err(err) => return Err(anyhow::anyhow!("failed to read stream packet: {err}")),
+            };
+
+            if packet.track_id == self.track_id {
+                break packet;
             }
         };
 
@@ -328,15 +400,13 @@ impl AudioStream {
             // Consume the new metadata at the head of the metadata queue.
         }
 
-        // If the packet does not belong to the selected track, skip over it.
-        if packet.track_id != self.track_id {
-            return Err(anyhow::anyhow!("Packet doesn't belong to current track"));
-        }
-
         // Decode the packet into audio samples.
         match self.decoder.decode(&packet) {
             Ok(audio_buf) => {
                 let sample_count = audio_buf.samples_interleaved();
+                if sample_count > sample_buf.len() {
+                    return Err(anyhow::anyhow!("decoded packet is too large"));
+                }
 
                 // Copy the audio samples from the generic audio buffer to the vector in interleaved
                 // order. The sample format to convert to is inferred from the type of the Vec.
@@ -353,10 +423,7 @@ impl AudioStream {
                 ))
                 // The packet failed to decode due to invalid data, skip the packet.
             }
-            Err(err) => {
-                // An unrecoverable error occurred, halt decoding.
-                panic!("{}", err);
-            }
+            Err(err) => Err(anyhow::anyhow!("failed to decode stream: {err}")),
         }
     }
 }

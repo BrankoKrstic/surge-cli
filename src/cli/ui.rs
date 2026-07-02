@@ -3,28 +3,37 @@ use std::iter::repeat_n;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Stylize},
+    style::{Color, Style, Stylize},
     symbols::border,
     text::{Line, Span, Text},
     widgets::{Block, Clear, Paragraph, RenderDirection, Sparkline},
 };
 
-use crate::cli::app::{App, Screen};
+use crate::cli::app::{App, Screen, StreamState};
 
 pub fn render(app: &mut App, frame: &mut Frame) {
     let constraints = [Constraint::Length(1), Constraint::Fill(1)];
     let layout = Layout::vertical(constraints).spacing(1);
     let [top, first] = frame.area().layout(&layout);
 
+    let stream_status = match app.stream_state() {
+        StreamState::Playing { name } => Span::from(name.as_str()).bold(),
+        StreamState::Error { message } => Span::styled(
+            format!("Stream error: {message}"),
+            Style::default().fg(Color::Red),
+        )
+        .bold(),
+    };
     let title = Line::from_iter([
-        Span::from("Sparkline Widget").bold(),
-        Span::from(" (Press 'q' to quit)"),
-        Span::from(format!(" Volume: {}%", app.volume())),
+        stream_status,
+        Span::from("  Press 'h' for help"),
+        Span::from(format!("  Volume: {}%", app.volume())),
     ]);
     frame.render_widget(title.centered(), top);
 
     render_sparkline(app, frame, first);
     render_search_screen(app, frame);
+    render_help_screen(app, frame);
     render_exit_screen(app, frame);
 }
 
@@ -54,6 +63,36 @@ fn render_exit_screen(app: &mut App, frame: &mut Frame) {
     }
 }
 
+fn render_help_screen(app: &mut App, frame: &mut Frame) {
+    if let Screen::Help = app.screen {
+        let title = Line::from(" Help ".bold());
+        let title_bottom = Line::from(" Esc to close ".bold());
+        let block = Block::bordered()
+            .title(title.left_aligned())
+            .title_bottom(title_bottom.right_aligned())
+            .border_set(border::THICK);
+
+        let content = Text::from(vec![
+            Line::from("h        open/close help"),
+            Line::from("f        search stations"),
+            Line::from("Up/Down  move selection"),
+            Line::from("Enter    play selected station"),
+            Line::from("+ / -    volume"),
+            Line::from("m        mute"),
+            Line::from("q        quit"),
+            Line::from("Esc      close help"),
+        ]);
+
+        let help_paragraph = Paragraph::new(content).block(block);
+
+        let clear_area = centered_rect(50, 42, frame.area());
+        frame.render_widget(Clear, clear_area);
+
+        let area = centered_rect(48, 40, frame.area());
+        frame.render_widget(help_paragraph, area);
+    }
+}
+
 fn render_search_screen(app: &mut App, frame: &mut Frame) {
     if let Screen::Search = app.screen {
         let title = Line::from(" Search ".bold());
@@ -70,7 +109,7 @@ fn render_search_screen(app: &mut App, frame: &mut Frame) {
             }
             crate::radio::RadioState::Error(_) => vec![
                 instructions,
-                Line::from("An error occured loading stations".red()),
+                Line::from("An error occurred loading stations".red()),
             ],
             crate::radio::RadioState::Complete(api_stations) => {
                 let mut v = vec![instructions];

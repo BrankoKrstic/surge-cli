@@ -26,3 +26,9 @@ impl Signal {
         self.inner.1.notify_all();
     }
 }
+
+impl Default for Signal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
