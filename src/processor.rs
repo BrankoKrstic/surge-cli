@@ -29,12 +29,21 @@ pub struct ProcessorReader {
     playback_counter: Arc<AtomicU64>,
     last_written: u64,
     visualisation_buffer: VecDeque<f32>,
+    frequency: u32,
 }
 
 impl ProcessorReader {
-    pub fn query_frequencies(&mut self) -> [f64; 4096] {
+    pub fn query_frequencies(&mut self, dt: f32) -> [f64; 4096] {
         let playback = self.playback_counter.load(Ordering::Relaxed);
         let mut lock = self.inner.lock().unwrap();
+
+        if playback == self.last_written {
+            let frames_dropped = (dt * self.frequency as f32) as usize;
+
+            for _ in 0..frames_dropped {
+                self.visualisation_buffer.push_back(0.0);
+            }
+        }
         while playback > self.last_written {
             let next_chunk = lock.try_pop();
 
@@ -82,6 +91,9 @@ impl ProcessorReader {
 
         out
     }
+    pub fn set_frequency(&mut self, freq: u32) {
+        self.frequency = freq;
+    }
 }
 
 pub struct ProcessorWriter {
@@ -126,6 +138,7 @@ impl Processor {
     pub fn split(self) -> (ProcessorReader, ProcessorWriter) {
         let inner = Arc::new(Mutex::new(HeapRb::new(1000)));
         let reader = ProcessorReader {
+            frequency: 44100,
             inner: inner.clone(),
             playback_counter: self.playback_counter,
             last_written: 0,

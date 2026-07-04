@@ -22,27 +22,30 @@ use symphonia::{
 };
 
 use crate::{
+    loader::Loader,
     play::{Playback, PlaybackConfig},
     processor::ProcessorWriter,
     signal::Signal,
 };
 
+enum AudioStreamEvent {
+    LoadFail(String),
+    LoadSuccess(Md),
+    Unload,
+}
+
 enum AudioPlaybackMessage {
     Quit,
     SetVolume(u32),
-    LoadStream(String),
+    LoadStream(String, Md),
     StopStream,
-}
-
-#[derive(Debug, Clone)]
-pub enum AudioControllerEvent {
-    StreamError(String),
 }
 
 pub struct AudioController {
     playback_tx: Sender<AudioPlaybackMessage>,
-    event_rx: Receiver<AudioControllerEvent>,
     playback_config: PlaybackConfig,
+    stream_state: Option<Result<Md, String>>,
+    audio_rx: Receiver<AudioStreamEvent>,
 }
 
 impl AudioController {
@@ -54,38 +57,49 @@ impl AudioController {
         std::thread::spawn(move || playback.run());
 
         let (tx, rx) = channel();
-        let (event_tx, event_rx) = channel();
+        let (audio_tx, audio_rx) = channel();
+
         let decoder = AudioDecoder::new(
             producer,
             playback_done_signal,
             writer,
             rx,
-            event_tx,
             playback_config,
+            audio_tx,
         );
 
         std::thread::spawn(|| decoder.run());
         Self {
             playback_tx: tx,
-            event_rx,
             playback_config,
+            stream_state: None,
+            audio_rx,
         }
+    }
+    pub fn poll_events(&mut self) {
+        while let Ok(evt) = self.audio_rx.try_recv() {
+            self.stream_state = match evt {
+                AudioStreamEvent::LoadFail(str) => Some(Err(str)),
+                AudioStreamEvent::LoadSuccess(md) => Some(Ok(md)),
+                AudioStreamEvent::Unload => None,
+            };
+        }
+    }
+    pub fn stream_metadata(&self) -> Option<Result<Md, String>> {
+        self.stream_state.clone()
     }
     pub fn playback_config(&self) -> PlaybackConfig {
         self.playback_config
-    }
-    pub fn try_next_event(&mut self) -> Option<AudioControllerEvent> {
-        self.event_rx.try_recv().ok()
     }
     pub fn set_volume(&mut self, volume: u32) {
         let _ = self
             .playback_tx
             .send(AudioPlaybackMessage::SetVolume(volume));
     }
-    pub fn load_stream(&mut self, stream_url: String) {
+    pub fn load_stream(&mut self, stream_url: String, md: Md) {
         let _ = self
             .playback_tx
-            .send(AudioPlaybackMessage::LoadStream(stream_url));
+            .send(AudioPlaybackMessage::LoadStream(stream_url, md));
     }
     pub fn stop_stream(&mut self) {
         let _ = self.playback_tx.send(AudioPlaybackMessage::StopStream);
@@ -98,20 +112,32 @@ impl Drop for AudioController {
     }
 }
 
+#[derive(Clone)]
+pub struct Md {
+    pub station_name: String,
+}
+
+impl Md {
+    pub fn new(station_name: String) -> Self {
+        Self { station_name }
+    }
+}
+
 struct AudioDecoder {
     audio_buffer: rtrb::Producer<f32>,
     playback_done_signal: Signal,
     processor_writer: ProcessorWriter,
     volume_percent: u32,
     controller_rx: Receiver<AudioPlaybackMessage>,
-    event_tx: Sender<AudioControllerEvent>,
     stream: Option<AudioStream>,
+    pending_stream: Option<Loader<Result<AudioStream, Error>>>,
     playback_config: PlaybackConfig,
     input_buf: [f32; 15_000],
     input_buf_size: usize,
     output_buf: [f32; 20_000],
     output_buf_size: usize,
     decode_error_count: u32,
+    audio_tx: Sender<AudioStreamEvent>,
 }
 
 impl AudioDecoder {
@@ -120,8 +146,8 @@ impl AudioDecoder {
         playback_done_signal: Signal,
         processor_writer: ProcessorWriter,
         controller_rx: Receiver<AudioPlaybackMessage>,
-        event_tx: Sender<AudioControllerEvent>,
         playback_config: PlaybackConfig,
+        audio_tx: Sender<AudioStreamEvent>,
     ) -> Self {
         Self {
             audio_buffer,
@@ -129,14 +155,15 @@ impl AudioDecoder {
             processor_writer,
             volume_percent: 100,
             controller_rx,
-            event_tx,
             stream: None,
+            pending_stream: None,
             playback_config,
             input_buf: [0.0; 15_000],
             input_buf_size: 0,
             output_buf: [0.0; 20_000],
             output_buf_size: 0,
             decode_error_count: 0,
+            audio_tx,
         }
     }
     fn run(mut self) {
@@ -147,16 +174,10 @@ impl AudioDecoder {
                     AudioPlaybackMessage::SetVolume(volume_percent) => {
                         self.volume_percent = volume_percent
                     }
-                    AudioPlaybackMessage::LoadStream(stream) => {
-                        match AudioStream::connect(stream, self.playback_config) {
-                            Ok(stream) => {
-                                self.decode_error_count = 0;
-                                self.stream = Some(stream)
-                            }
-                            Err(err) => {
-                                self.fail_stream(format!("Failed to load stream: {err}"));
-                            }
-                        }
+                    AudioPlaybackMessage::LoadStream(stream, md) => {
+                        self.pending_stream = Some(Loader::new(move || {
+                            AudioStream::connect(stream.clone(), self.playback_config, md.clone())
+                        }));
                     }
                     AudioPlaybackMessage::StopStream => {
                         self.stream = None;
@@ -164,23 +185,36 @@ impl AudioDecoder {
                 }
                 continue;
             }
+            self.poll_pending_stream();
             if self.stream.is_none() {
                 std::thread::sleep(Duration::from_millis(10));
             }
             self.try_decode_samples()
         }
     }
-    fn report_stream_error(&self, message: String) {
-        let _ = self
-            .event_tx
-            .send(AudioControllerEvent::StreamError(message));
+    fn poll_pending_stream(&mut self) {
+        if let Some(stream) = self.pending_stream.take() {
+            match stream.take_state() {
+                Ok(result) => match result {
+                    Ok(stream) => {
+                        let _ = self
+                            .audio_tx
+                            .send(AudioStreamEvent::LoadSuccess(stream.md.clone()));
+                        self.stream = Some(stream);
+                    }
+                    Err(e) => self.fail_stream(e.to_string()),
+                },
+                Err(loader) => self.pending_stream = Some(loader),
+            }
+        }
     }
     fn fail_stream(&mut self, message: String) {
         self.stream = None;
         self.input_buf_size = 0;
         self.output_buf_size = 0;
-        self.report_stream_error(message);
+        let _ = self.audio_tx.send(AudioStreamEvent::LoadFail(message));
     }
+
     fn resample(&mut self) -> anyhow::Result<()> {
         let Some(stream) = self.stream.as_mut() else {
             return Ok(());
@@ -309,11 +343,14 @@ struct AudioStream {
     track_id: u32,
     channels: usize,
     resampler: Fft<f32>,
+    md: Md,
 }
 
 impl AudioStream {
-    fn connect(url: String, playback_config: PlaybackConfig) -> Result<Self, Error> {
-        let response = reqwest::blocking::get(url)
+    fn connect(url: String, playback_config: PlaybackConfig, md: Md) -> Result<Self, Error> {
+        let response = reqwest::blocking::Client::new()
+            .get(url)
+            .send()
             .with_context(|| "failed to connect to stream")?
             .error_for_status()
             .with_context(|| "stream returned an error response")?;
@@ -373,6 +410,7 @@ impl AudioStream {
             track_id,
             channels,
             resampler,
+            md,
         })
     }
 

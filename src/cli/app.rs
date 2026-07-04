@@ -1,5 +1,5 @@
 use crate::{
-    controller::{AudioController, AudioControllerEvent},
+    controller::{AudioController, Md},
     processor::ProcessorReader,
     radio::{RadioApiFetcher, RadioState},
 };
@@ -17,7 +17,6 @@ pub struct App {
     selected_idx: usize,
     audio_controller: AudioController,
     muted: bool,
-    stream_state: StreamState,
     sample_rate: u32,
 }
 
@@ -28,6 +27,7 @@ pub struct FrequencyState {
 pub enum StreamState {
     Playing { name: String },
     Error { message: String },
+    Paused,
 }
 pub enum Direction {
     Up,
@@ -37,7 +37,6 @@ impl App {
     pub fn new(
         reader: ProcessorReader,
         audio_controller: AudioController,
-        initial_station_name: String,
         sample_rate: u32,
     ) -> Self {
         Self {
@@ -54,17 +53,20 @@ impl App {
             selected_idx: 0,
             audio_controller,
             muted: false,
-            stream_state: StreamState::Playing {
-                name: initial_station_name,
-            },
             sample_rate,
         }
     }
     pub fn volume(&self) -> u32 {
         self.volume
     }
-    pub fn stream_state(&self) -> &StreamState {
-        &self.stream_state
+    pub fn stream_state(&self) -> StreamState {
+        match self.audio_controller.stream_metadata() {
+            Some(Ok(md)) => StreamState::Playing {
+                name: md.station_name,
+            },
+            Some(Err(err)) => StreamState::Error { message: err },
+            None => StreamState::Paused,
+        }
     }
     pub fn search_query(&self) -> &str {
         &self.search_query[..]
@@ -85,11 +87,10 @@ impl App {
             return;
         };
 
-        self.stream_state = StreamState::Playing {
-            name: station.name.to_string(),
-        };
-        self.audio_controller
-            .load_stream(station.url_resolved.to_string());
+        self.audio_controller.load_stream(
+            station.url_resolved.to_string(),
+            Md::new(station.name.clone()),
+        );
     }
     pub fn toggle_mute(&mut self) {
         self.muted = !self.muted;
@@ -123,15 +124,8 @@ impl App {
         self.radio.poll_state()
     }
     pub fn tick(&mut self) {
-        while let Some(event) = self.audio_controller.try_next_event() {
-            match event {
-                AudioControllerEvent::StreamError(message) => {
-                    self.stream_state = StreamState::Error { message };
-                }
-            }
-        }
-
-        self.freq.frequencies = self.processor_reader.query_frequencies();
+        self.audio_controller.poll_events();
+        self.freq.frequencies = self.processor_reader.query_frequencies(1.0 / 60.0);
     }
     pub fn move_cursor(&mut self, direction: Direction) {
         if let RadioState::Complete(x) = self.radio_state()

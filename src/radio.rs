@@ -1,10 +1,11 @@
 use oneshot::Receiver;
 use radiobrowser::{ApiStation, StationOrder, blocking::RadioBrowserAPI};
 
+use crate::loader::{Loader, LoaderState};
+
 pub struct RadioApiFetcher {
     api: RadioBrowserAPI,
-    state: RadioState,
-    pending_channel: Option<Receiver<Result<Vec<ApiStation>, String>>>,
+    state: Loader<Result<Vec<ApiStation>, String>>,
 }
 
 #[derive(Clone)]
@@ -19,8 +20,7 @@ impl RadioApiFetcher {
         let api = RadioBrowserAPI::new().unwrap();
         let mut out = Self {
             api,
-            state: RadioState::Complete(vec![]),
-            pending_channel: None,
+            state: Loader::new(|| Ok(vec![])),
         };
         out.query("");
         out
@@ -34,30 +34,16 @@ impl RadioApiFetcher {
             .limit("20")
             .reverse(true)
             .order(StationOrder::Clickcount);
-        let (tx, rx) = oneshot::channel();
-        self.state = RadioState::Pending;
-        self.pending_channel = Some(rx);
-        std::thread::spawn(|| {
-            let response = stations.send();
-            let _ = tx.send(response.map_err(|e| e.to_string()));
-        });
-    }
-
-    fn poll_channel(&mut self) {
-        if let Some(channel) = self.pending_channel.take() {
-            if let Ok(response) = channel.try_recv() {
-                match response {
-                    Err(err) => self.state = RadioState::Error(err),
-                    Ok(stations) => self.state = RadioState::Complete(stations),
-                }
-            } else {
-                self.pending_channel = Some(channel);
-            }
-        }
+        self.state = Loader::new(move || stations.clone().send().map_err(|e| e.to_string()));
     }
     pub fn poll_state(&mut self) -> RadioState {
-        self.poll_channel();
-        self.state.clone()
+        match self.state.get_state() {
+            LoaderState::Pending => RadioState::Pending,
+            LoaderState::Done(res) => match res {
+                Ok(res) => RadioState::Complete(res.clone()),
+                Err(err) => RadioState::Error(err.clone()),
+            },
+        }
     }
 }
 

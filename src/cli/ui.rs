@@ -17,12 +17,13 @@ pub fn render(app: &mut App, frame: &mut Frame) {
     let [top, first] = frame.area().layout(&layout);
 
     let stream_status = match app.stream_state() {
-        StreamState::Playing { name } => Span::from(name.as_str()).bold(),
+        StreamState::Playing { name } => Span::from(name).bold(),
         StreamState::Error { message } => Span::styled(
             format!("Stream error: {message}"),
             Style::default().fg(Color::Red),
         )
         .bold(),
+        StreamState::Paused => Span::from("No Station Playing").bold(),
     };
     let title = Line::from_iter([
         stream_status,
